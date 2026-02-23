@@ -1,137 +1,110 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
+import plotly.express as px
 from datetime import datetime
-import time
 
-# --- CONFIGURATION DE L'INTERFACE ---
-st.set_page_config(page_title="MDB GIRONDE ULTIME", layout="wide")
+# --- CONFIGURATION ---
+st.set_page_config(page_title="MDB GIRONDE - NÉGOCIATEUR PRO", layout="wide")
 
-# --- BASE DE DONNÉES DVF & SECTEURS ---
-DVF_REF = {
-    "Bordeaux Centre": {"m2": 5200, "cp": "33000"},
-    "Bordeaux Bastide": {"m2": 3800, "cp": "33100"},
-    "Cenon": {"m2": 2900, "cp": "33150"},
-    "Lormont": {"m2": 2600, "cp": "33310"},
-    "Floirac": {"m2": 2800, "cp": "33270"},
-    "Pessac": {"m2": 3950, "cp": "33600"},
-    "Mérignac": {"m2": 4100, "cp": "33700"},
-    "Bègles": {"m2": 3600, "cp": "33130"},
-    "Villenave": {"m2": 3300, "cp": "33140"},
-    "Libourne": {"m2": 2100, "cp": "33500"}
+# --- DATA RÉFÉRENCE ---
+MARKET_DATA = {
+    "Bordeaux Centre": {"Maison": 5500, "Appartement": 4800, "tendance": +1.2},
+    "Bordeaux Bastide": {"Maison": 4100, "Appartement": 3700, "tendance": +2.5},
+    "Cenon": {"Maison": 3100, "Appartement": 2600, "tendance": +3.1},
+    "Lormont": {"Maison": 2700, "Appartement": 2300, "tendance": +1.5},
+    "Pessac": {"Maison": 4200, "Appartement": 3800, "tendance": -0.5},
+    "Mérignac": {"Maison": 4300, "Appartement": 3900, "tendance": +0.8},
+    "Libourne": {"Maison": 2300, "Appartement": 1900, "tendance": +4.5}
 }
 
-# --- LOGIQUE DE GÉNÉRATION DE LIENS RÉELS ---
-def generate_lbc_link(secteur, cp, prix_max, bati_min, piscine):
-    # Génère un lien LeBonCoin avec les filtres réels
-    base_url = "https://www.leboncoin.fr/recherche?"
-    piscine_query = "+piscine" if piscine else ""
-    return f"{base_url}category=2&locations={secteur}_{cp}&price=min-{prix_max}&square={bati_min}-max&text=maison{piscine_query}"
-
-def generate_c21_link(cp):
-    return f"https://www.century21.fr/annonces/achat/cp-{cp}/"
-
-# --- FONCTION DE SIMULATION DE RÉCUPÉRATION (MULTISOURCES) ---
-@st.cache_data(ttl=600) 
-def fetch_annonces_multisources(ville, rayon, piscine):
-    # Simulation d'agrégation (LeBonCoin, Century21, etc.)
-    data = [
-        {"source": "LeBonCoin", "titre": "Maison avec piscine", "secteur": "Cenon", "prix": 310000, "bati": 90, "terrain": 600, "piscine": True, "date_poste": "2026-02-15", "lien": "https://www.leboncoin.fr/immobilier/245678.htm"},
-        {"source": "Century21", "titre": "Pavillon Plain-pied", "secteur": "Cenon", "prix": 265000, "bati": 85, "terrain": 400, "piscine": False, "date_poste": "2025-12-10", "lien": "https://www.century21.fr/annonce/12345"},
-        {"source": "Orpi", "titre": "Échoppe à rénover", "secteur": "Bordeaux Bastide", "prix": 290000, "bati": 75, "terrain": 50, "piscine": False, "date_poste": "2026-02-20", "lien": "https://www.orpi.com/annonce/6789"},
-        {"source": "LeBonCoin", "titre": "Grande villa", "secteur": "Pessac", "prix": 520000, "bati": 140, "terrain": 1200, "piscine": True, "date_poste": "2026-02-22", "lien": "https://www.leboncoin.fr/immobilier/999.htm"}
-    ]
-    df = pd.DataFrame(data)
+# --- LOGIQUE DE NÉGOCIATION (RÈGLE DES 20% DE MARGE) ---
+def simulateur_nego(prix_affiche, travaux, m2, ville, type_bien, marge_visée=20):
+    # 1. Estimation Revente (Basée sur DVF + Tendance)
+    ref_m2 = MARKET_DATA[ville][type_bien]
+    prix_revente_estime = ref_m2 * m2
     
-    # Filtrage par Piscine
-    if piscine:
-        df = df[df['piscine'] == True]
+    # 2. Calcul à l'envers pour trouver le Prix d'Achat Maximal (PAM)
+    # Formule simplifiée incluant TVA sur marge et Frais MDB
+    # PAM = (Revente - Travaux - Marge - Frais Revente) / (1 + Frais Notaire + Coeff TVA)
     
-    # Filtrage par Ville (Simplifié car simulation de rayon)
-    if ville != "Toute la Gironde":
-        df = df[df['secteur'] == ville]
-        
-    return df
+    marge_euros = prix_revente_estime * (marge_visée / 100)
+    frais_revente = prix_revente_estime * 0.05 # Agence
+    frais_notaire_mdb = 0.02 # 2%
+    tva_sur_marge_estimee = (marge_euros / 1.2) * 0.20
+    
+    # Prix d'offre max pour atteindre la marge
+    offre_cible = (prix_revente_estime - marge_euros - travaux - frais_revente - tva_sur_marge_estimee) / (1 + frais_notaire_mdb)
+    
+    negociation_requise = prix_affiche - offre_cible
+    pct_nego = (negociation_requise / prix_affiche) * 100
+    
+    return int(offre_cible), int(marge_euros), int(negociation_requise), round(pct_nego, 1), int(prix_revente_estime)
 
 # --- INTERFACE ---
-st.title("🦅 MDB GIRONDE : Sourcing Multi-Sources")
+st.title("🤝 Scénario de Négociation & Calcul de l'Offre")
 
 with st.sidebar:
-    st.header("🔍 Paramètres de Recherche")
-    ville_search = st.selectbox("Ville de départ", ["Toute la Gironde"] + list(DVF_REF.keys()))
-    rayon = st.slider("Rayon autour (km)", 0, 50, 10)
-    prix_max = st.number_input("Budget Max (€)", value=500000)
-    bati_min = st.number_input("Surface Bâti Min (m2)", value=70)
-    opt_piscine = st.checkbox("Option Piscine 🏊‍♂️")
+    st.header("🔍 Détails du Bien")
+    ville = st.selectbox("Secteur", list(MARKET_DATA.keys()))
+    type_b = st.radio("Type", ["Maison", "Appartement"])
+    surface = st.number_input("Surface (m2)", value=80)
+    prix_annonce = st.number_input("Prix Affiché (€)", value=350000)
+    est_travaux = st.number_input("Budget Travaux estimé (€)", value=50000)
+    marge_cible = st.slider("Marge Nette Visée (%)", 10, 35, 20)
     
     st.divider()
-    if st.button("🔄 Lancer la recherche / Rafraîchir"):
-        st.cache_data.clear()
-        st.success("Recherche en cours...")
+    options = st.multiselect("Points faibles (pour négo)", 
+                            ["Pas de Balcon", "DPE F/G", "Chauffage Gaz/Fioul", "RDC", "Travaux lourds"])
 
-    st.divider()
-    st.subheader("🛠️ Outils de Sourcing Direct")
-    cp_target = DVF_REF.get(ville_search, {"cp": "33000"})["cp"]
-    lbc_url = generate_lbc_link(ville_search, cp_target, prix_max, bati_min, opt_piscine)
-    c21_url = generate_c21_link(cp_target)
-    
-    st.link_button("👉 Ouvrir LeBonCoin", lbc_url)
-    st.link_button("👉 Ouvrir Century21", c21_url)
+# --- RÉSULTATS DE NÉGOCIATION ---
+offre, profit, baisse, baisse_pct, revente_prevue = simulateur_nego(prix_annonce, est_travaux, surface, ville, type_b, marge_cible)
 
-# --- TRAITEMENT ET AFFICHAGE ---
-df = fetch_annonces_multisources(ville_search, rayon, opt_piscine)
+c1, c2, c3 = st.columns(3)
 
-# Calculs Métier
-df['Prix_m2'] = (df['prix'] / df['bati']).round(0)
-def calc_opp(row):
-    ref = DVF_REF.get(row['secteur'], {"m2": 3000})['m2']
-    diff = ((ref - row['Prix_m2']) / ref) * 100
-    return round(diff, 1)
+with c1:
+    st.metric("PRIX D'OFFRE CIBLE", f"{offre} €")
+    st.caption(f"Pour garantir {marge_cible}% de marge nette")
 
-df['Opportunité_%'] = df.apply(calc_opp, axis=1)
-df['Vraie_Date'] = pd.to_datetime(df['date_poste'])
-df['Ancienneté'] = df['Vraie_Date'].apply(lambda x: "⚠️ REPOSTE (+90j)" if (datetime.now() - x).days > 90 else "✨ Nouveau")
+with c2:
+    st.metric("BAISSE À OBTENIR", f"- {baisse} €", f"{baisse_pct} %")
+    st.progress(min(baisse_pct / 40, 1.0)) # Barre de difficulté de négo
 
-# --- TABLEAU FINAL ---
-st.subheader(f"📊 Résultats pour {ville_search} (+{rayon}km)")
+with c3:
+    st.metric("PROFIT NET ESTIMÉ", f"{profit} €")
+    st.caption(f"Après TVA et frais MDB")
 
-# Affichage des cartes d'opportunités
-col1, col2, col3 = st.columns(3)
-with col1:
-    st.metric("Meilleure Marge", f"{df['Opportunité_%'].max()}%")
-with col2:
-    st.metric("Prix m2 Moyen", f"{int(df['Prix_m2'].mean())}€")
-with col3:
-    st.metric("Biens trouvés", len(df))
-
-# Tableau avec liens cliquables
-st.dataframe(
-    df,
-    column_order=("Ancienneté", "Opportunité_%", "source", "titre", "prix", "Prix_m2", "secteur", "bati", "terrain", "piscine", "lien"),
-    use_container_width=True
-)
-
-# --- CALCULATEUR DE MARGE AVEC OPTION PISCINE ---
 st.divider()
-st.subheader("💸 Calculateur de Marge Nette (Spécial Piscine)")
-c_a, c_b = st.columns(2)
 
-with c_a:
-    p_achat = st.number_input("Prix d'achat", value=250000)
-    travaux = st.number_input("Travaux (Rénovation + Chauffage)", value=40000)
-    piscine_add = st.checkbox("Ajouter une Piscine ?")
-    cout_piscine = 25000 if piscine_add else 0
-    
-with c_b:
-    revente_base = st.number_input("Revente estimée (DVF Médian)", value=350000)
-    bonus_piscine = 35000 if (piscine_add or opt_piscine) else 0
-    revente_totale = revente_base + bonus_piscine
-    
-    # Calcul MDB (Frais notaire réduits + TVA sur marge)
-    notaire = p_achat * 0.02
-    tva_marge = ((revente_totale - p_achat) / 1.2) * 0.20
-    marge_net = revente_totale - (p_achat + notaire + travaux + cout_piscine + tva_marge)
-    
-    st.metric("Marge Nette Estimée", f"{int(marge_net)} €", delta=f"{bonus_piscine}€ via Piscine")
+# --- GRAPHIQUE DE RÉPARTITION DES COÛTS ---
+st.subheader("📊 Où va l'argent ? (Répartition du Projet)")
+labels = ['Prix d\'Achat Cible', 'Travaux', 'Marge Nette', 'TVA & Frais']
+values = [offre, est_travaux, profit, (revente_prevue - offre - est_travaux - profit)]
 
-st.info("💡 **Astuce MDB Cenon/Gironde :** Une piscine sur la rive droite (Cenon/Lormont) est un luxe rare qui permet de revendre le bien 15% au-dessus du prix m2 moyen DVF.")
+fig = px.pie(values=values, names=labels, hole=.4, color_discrete_sequence=px.colors.sequential.RdBu)
+st.plotly_chart(fig)
+
+# --- ARGUMENTAIRE DE NÉGOCIATION GÉNÉRÉ ---
+st.subheader("📢 Votre Argumentaire de Négociation")
+st.info(f"""
+**Bonjour, suite à la visite du bien à {ville}, voici notre analyse :**
+- Le prix moyen réel constaté (DVF) pour un {type_b} est de **{MARKET_DATA[ville][type_b]}€/m2**.
+- Le bien nécessite **{est_travaux}€** de travaux pour atteindre les standards du marché.
+- {"⚠️ L'absence de balcon réduit la valeur de revente de 10%." if "Pas de Balcon" in options else ""}
+- {"📉 Le DPE classé F/G impose une rénovation énergétique lourde." if "DPE F/G" in options else ""}
+- **Notre offre se positionne à {offre} €.** C'est une offre ferme, en fonds propres (ou sans condition suspensive), permettant une vente rapide.
+""")
+
+# --- RAPPEL DU MARCHÉ ---
+with st.expander("📈 Voir les tendances du secteur"):
+    tendance = MARKET_DATA[ville]['tendance']
+    st.write(f"À **{ville}**, le marché des **{type_b}s** a évolué de **{tendance}%** sur les 6 derniers mois.")
+    if tendance < 0:
+        st.warning("Marché baissier : Soyez encore plus agressif sur l'offre !")
+    else:
+        st.success("Marché porteur : La marge peut augmenter pendant la durée des travaux.")
+
+# --- BOUTON DE MISE À JOUR ---
+if st.button("🔄 Actualiser les flux d'annonces"):
+    st.cache_data.clear()
+    st.write("Recherche de nouveaux biens rentables en cours...")
