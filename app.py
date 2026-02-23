@@ -7,9 +7,9 @@ from fpdf import FPDF
 import time
 
 # --- CONFIGURATION ---
-st.set_page_config(page_title="MDB GIRONDE - SYSTÈME ULTIME", layout="wide")
+st.set_page_config(page_title="MDB GIRONDE - SYSTÈME FINAL", layout="wide")
 
-# --- DATA RÉFÉRENCE (Maisons vs Appartements + Tendances) ---
+# --- DONNÉES DE RÉFÉRENCE ---
 MARKET_DATA = {
     "Bordeaux Centre": {"cp": "33000", "Maison": 5500, "Appartement": 4800, "tendance": +1.2, "lat": 44.8378, "lon": -0.5792},
     "Bordeaux Bastide": {"cp": "33100", "Maison": 4100, "Appartement": 3700, "tendance": +2.5, "lat": 44.8415, "lon": -0.5500},
@@ -23,56 +23,78 @@ MARKET_DATA = {
     "Libourne": {"cp": "33500", "Maison": 2300, "Appartement": 1900, "tendance": +4.5, "lat": 44.9140, "lon": -0.2440}
 }
 
-# --- FONCTION EXPORT PDF CORRIGÉE ---
+# --- FONCTION EXPORT PDF (CORRIGÉE) ---
 def create_pdf(ville, type_b, surface, offre, arguments):
     pdf = FPDF()
     pdf.add_page()
-    pdf.set_font("Arial", "B", 16)
-    pdf.cell(200, 10, txt="RAPPORT D'OFFRE D'ACHAT - MDB GIRONDE", ln=True, align='C')
+    pdf.set_font("Helvetica", "B", 16)
+    pdf.cell(0, 10, "RAPPORT D'OFFRE D'ACHAT - MDB GIRONDE", ln=True, align='C')
     pdf.ln(10)
-    pdf.set_font("Arial", "", 12)
-    pdf.cell(200, 10, txt=f"Secteur : {ville} | Type : {type_b}", ln=True)
-    pdf.cell(200, 10, txt=f"Surface : {surface} m2", ln=True)
-    pdf.cell(200, 10, txt=f"Date : {datetime.now().strftime('%d/%m/%Y')}", ln=True)
+    pdf.set_font("Helvetica", "", 12)
+    pdf.cell(0, 10, f"Secteur : {ville} | Type : {type_b}", ln=True)
+    pdf.cell(0, 10, f"Surface habitable : {surface} m2", ln=True)
+    pdf.cell(0, 10, f"Date : {datetime.now().strftime('%d/%m/%Y')}", ln=True)
     pdf.ln(5)
-    pdf.set_font("Arial", "B", 14)
-    # Ligne corrigée ci-dessous
-    pdf.cell(200, 10, txt=f"MONTANT DE L'OFFRE : {offre} euros", ln=True)
+    pdf.set_font("Helvetica", "B", 14)
+    pdf.cell(0, 10, f"MONTANT DE L'OFFRE : {offre} euros", ln=True)
     pdf.ln(5)
-    pdf.set_font("Arial", "", 11)
-    pdf.multi_cell(0, 10, txt=f"Arguments techniques :\n{arguments}")
-    return pdf.output(dest='S').encode('latin-1', 'replace')
+    pdf.set_font("Helvetica", "", 11)
+    pdf.multi_cell(0, 10, f"Arguments de negociation :\n{arguments}")
+    return bytes(pdf.output()) # Fix pour AttributeError
 
-# --- SOURCING DATA ---
-@st.cache_data(ttl=600)
-def fetch_all_data():
-    return [
-        {"source": "LBC", "titre": "Maison avec Balcon", "secteur": "Cenon", "prix": 245000, "bati": 85, "terrain": 450, "piscine": False, "balcon": True, "chauffage": "Gaz", "date_1ere": "2023-11-10", "lien": "https://www.leboncoin.fr"},
-        {"source": "C21", "titre": "Appartement T3 centre", "secteur": "Bordeaux Centre", "prix": 310000, "bati": 65, "terrain": 0, "piscine": False, "balcon": True, "chauffage": "Elec", "date_1ere": "2026-02-10", "lien": "https://www.century21.fr"},
-        {"source": "Orpi", "titre": "Maison divisible", "secteur": "Pessac", "prix": 395000, "bati": 110, "terrain": 980, "piscine": True, "balcon": False, "chauffage": "Fioul", "date_1ere": "2023-09-15", "lien": "https://www.orpi.com"},
-        {"source": "Laforêt", "titre": "Échoppe à rénover", "secteur": "Bordeaux Bastide", "prix": 260000, "bati": 75, "terrain": 50, "piscine": False, "balcon": True, "chauffage": "Gaz", "date_1ere": "2026-02-20", "lien": "https://www.laforet.com"},
-        {"source": "Guy Hoquet", "titre": "Maison Plain-pied", "secteur": "Libourne", "prix": 165000, "bati": 80, "terrain": 350, "piscine": False, "balcon": False, "chauffage": "Elec", "date_1ere": "2026-02-18", "lien": "https://www.guy-hoquet.com"}
-    ]
+# --- GÉNÉRATEUR DE VRAIS LIENS DE RECHERCHE ---
+def get_real_links(secteur, marche, prix_max, m2_min, piscine, balcon):
+    # Gestion du CP (Gironde entière si "Tous les secteurs")
+    cp = MARKET_DATA.get(secteur, {"cp": "d_33"})["cp"]
+    if cp == "d_33": loc_lbc = "d_33"
+    else: loc_lbc = f"c_{cp}"
+    
+    # Mots clés
+    query = marche.lower()
+    if piscine: query += " piscine"
+    if balcon: query += " balcon"
+    query = query.replace(" ", "%20")
+    
+    links = {
+        "LeBonCoin": f"https://www.leboncoin.fr/recherche?category=2&locations={loc_lbc}&price=min-{prix_max}&square={m2_min}-max&text={query}",
+        "Century21": f"https://www.century21.fr/annonces/achat/{'v-' + cp if cp != 'd_33' else ''}/",
+        "Orpi": f"https://www.orpi.com/recherche/achat/{marche.lower()}/{cp if cp != 'd_33' else 'gironde'}/",
+        "Laforet": f"https://www.laforet.com/acheter/rechercher?location={cp if cp != 'd_33' else '33'}",
+        "Guy Hoquet": f"https://www.guy-hoquet.com/achat/{marche.lower()}/{cp if cp != 'd_33' else 'gironde'}"
+    }
+    return links
 
 # --- SIDEBAR ---
-st.sidebar.title("🦅 MDB Gironde Pilot")
+st.sidebar.title("🦅 MDB GIRONDE PILOT")
 marche_type = st.sidebar.radio("Marché visé", ["Maison", "Appartement"])
-secteur_selected = st.sidebar.selectbox("📍 Secteur", ["Tous les secteurs"] + list(MARKET_DATA.keys()))
+secteur_selected = st.sidebar.selectbox("📍 Choix du Secteur", ["Tous les secteurs"] + list(MARKET_DATA.keys()))
 
 st.sidebar.divider()
-budget_max = st.sidebar.number_input("Budget Max (€)", value=600000)
-prix_m2_max = st.sidebar.slider("Prix m2 Max d'habitation (€)", 1000, 8000, 5000)
+budget_max = st.sidebar.number_input("Budget Achat Max (€)", value=500000)
+m2_hab_min = st.sidebar.number_input("Surface Habitable Min (m2)", value=70)
+prix_m2_max = st.sidebar.slider("Prix m2 Max autorisé (€)", 1500, 8000, 4500)
 
 st.sidebar.divider()
 f_piscine = st.sidebar.checkbox("Option Piscine 🏊‍♂️")
 f_balcon = st.sidebar.checkbox("Option Balcon / Terrasse ☕")
 
-# --- LOGIQUE DE CALCULS ---
-raw_annonces = fetch_all_data()
-df = pd.DataFrame(raw_annonces)
+# --- SOURCING (Simulation d'annonces avec calculs réels) ---
+@st.cache_data(ttl=600)
+def fetch_annonces():
+    # Données simulées (À remplacer par un vrai scraper si besoin)
+    data = [
+        {"source": "LBC", "titre": "Maison avec Balcon", "secteur": "Cenon", "prix": 245000, "bati": 85, "terrain": 450, "piscine": False, "balcon": True, "chauffage": "Gaz", "date_1ere": "2024-01-10", "lien": "https://www.leboncoin.fr"},
+        {"source": "C21", "titre": "Appartement T3 centre", "secteur": "Bordeaux Centre", "prix": 310000, "bati": 65, "terrain": 0, "piscine": False, "balcon": True, "chauffage": "Elec", "date_1ere": "2026-02-10", "lien": "https://www.century21.fr"},
+        {"source": "Orpi", "titre": "Maison divisible", "secteur": "Pessac", "prix": 395000, "bati": 110, "terrain": 980, "piscine": True, "balcon": False, "chauffage": "Fioul", "date_1ere": "2023-09-15", "lien": "https://www.orpi.com"},
+        {"source": "Laforet", "titre": "Echoppe à rénover", "secteur": "Bordeaux Bastide", "prix": 260000, "bati": 75, "terrain": 50, "piscine": False, "balcon": True, "chauffage": "Gaz", "date_1ere": "2026-02-20", "lien": "https://www.laforet.com"}
+    ]
+    return pd.DataFrame(data)
 
-def process_row(row):
-    # 1. Ancienneté & Reposte
+df = fetch_annonces()
+
+# --- CALCULS MÉTIERS ---
+def process_data(row):
+    # 1. Ancienneté
     d1 = pd.to_datetime(row['date_1ere'])
     jours = (datetime.now() - d1).days
     statut = "⚠️ REPOSTE" if jours > 90 else "✨ NOUVEAU"
@@ -80,64 +102,68 @@ def process_row(row):
     # 2. Prix m2 & Profit
     p_m2 = row['prix'] / row['bati']
     ref_m2 = MARKET_DATA[row['secteur']][marche_type]
-    
-    bonus = (15000 if row['balcon'] else 0) + (35000 if row['piscine'] else 0)
+    bonus = (15000 if row['balcon'] else 0) + (30000 if row['piscine'] else 0)
     revente = (ref_m2 * row['bati']) + bonus
     profit = revente - (row['prix'] * 1.02 + 45000 + (revente - row['prix'])*0.15)
     
     # 3. Division
-    div = "✅ OUI" if (row['terrain'] > 500 and row['terrain'] > row['bati']*3) else "❌ NON"
+    div = "✅ OUI" if (row['terrain'] > 500 and row['terrain'] > row['bati']*2.5) else "❌ NON"
     
     return pd.Series([int(p_m2), int(profit), div, statut, jours])
 
-df[['Prix_m2', 'Profit_Est', 'Division', 'Statut', 'Ancienneté_Jours']] = df.apply(process_row, axis=1)
+df[['Prix_m2', 'Profit_Est', 'Division', 'Statut', 'Jours']] = df.apply(process_data, axis=1)
 
-# Filtres actifs
+# Appliquer filtres de la sidebar
 if secteur_selected != "Tous les secteurs":
     df = df[df['secteur'] == secteur_selected]
-df = df[(df['prix'] <= budget_max) & (df['Prix_m2'] <= prix_m2_max)]
+df = df[(df['prix'] <= budget_max) & (df['Prix_m2'] <= prix_m2_max) & (df['bati'] >= m2_hab_min)]
 if f_piscine: df = df[df['piscine'] == True]
 if f_balcon: df = df[df['balcon'] == True]
 
 # --- DASHBOARD ---
-st.title(f"🚀 Sourcing Immobilier : {secteur_selected}")
+st.title(f"🚀 Sourcing MDB : {secteur_selected}")
 
-tab1, tab2, tab3 = st.tabs(["📋 Opportunités", "🗺️ Carte & Tendances", "🤝 Négociation & PDF"])
+tab1, tab2, tab3 = st.tabs(["📋 Opportunités", "🗺️ Analyse Marché", "🤝 Négociateur & Liens"])
 
 with tab1:
-    st.subheader(f"{len(df)} biens trouvés")
-    st.dataframe(df[['Statut', 'Ancienneté_Jours', 'Profit_Est', 'source', 'titre', 'prix', 'Prix_m2', 'secteur', 'bati', 'terrain', 'Division', 'chauffage', 'balcon', 'piscine', 'lien']], 
-                 column_config={"lien": st.column_config.LinkColumn("Lien Annonce")},
-                 use_container_width=True)
+    st.subheader(f"Résultats ({len(df)} biens)")
+    st.dataframe(df[['Statut', 'Jours', 'Profit_Est', 'source', 'titre', 'prix', 'Prix_m2', 'secteur', 'bati', 'terrain', 'Division', 'chauffage', 'balcon', 'piscine', 'lien']], use_container_width=True)
 
 with tab2:
-    col_m1, col_m2 = st.columns([2, 1])
-    with col_m1:
+    col_a, col_b = st.columns([2, 1])
+    with col_a:
         st.subheader("Carte des Secteurs")
         m_df = pd.DataFrame([{"Ville": k, "Lat": v['lat'], "Lon": v['lon'], "m2": v[marche_type], "Trend": v['tendance']} for k, v in MARKET_DATA.items()])
         fig = px.scatter_mapbox(m_df, lat="Lat", lon="Lon", color="Trend", size="m2", hover_name="Ville", zoom=9, mapbox_style="carto-positron")
         st.plotly_chart(fig, use_container_width=True)
-    with col_m2:
-        st.subheader("Indice Hausse/Baisse (6 mois)")
+    with col_b:
+        st.subheader("Tendances (6 mois)")
         st.line_chart(m_df.set_index("Ville")["Trend"])
 
 with tab3:
-    st.subheader("Générateur d'Offre PDF")
-    c_n1, c_n2 = st.columns(2)
-    with c_n1:
-        v_nego = st.selectbox("Secteur de l'Offre", list(MARKET_DATA.keys()))
-        p_ann = st.number_input("Prix de l'Annonce (€)", value=300000)
-        s_bati = st.number_input("Surface Habitable (m2)", value=80)
-        t_est = st.number_input("Total Travaux (€)", value=50000)
-    with c_n2:
-        ref_dvf = MARKET_DATA[v_nego][marche_type]
-        revente_p = ref_dvf * s_bati
-        offre_cible = (revente_p - (revente_p * 0.20) - t_est) / 1.05
-        st.metric("PRIX D'OFFRE CONSEILLÉ", f"{int(offre_cible)} €")
-        
-        args = f"Secteur : {v_nego}. Prix DVF : {ref_dvf}e/m2. Travaux : {t_est}e. Tendance : {MARKET_DATA[v_nego]['tendance']}%."
-        pdf_out = create_pdf(v_nego, marche_type, s_bati, int(offre_cible), args)
-        st.download_button("📥 Télécharger l'Offre PDF", pdf_out, f"Offre_{v_nego}.pdf", "application/pdf")
+    st.subheader("🔗 Liens de Sourcing Réels")
+    links = get_real_links(secteur_selected, marche_type, budget_max, m2_hab_min, f_piscine, f_balcon)
+    cols = st.columns(len(links))
+    for i, (name, url) in enumerate(links.items()):
+        cols[i].link_button(f"🔍 {name}", url)
 
-st.divider()
-st.info("Données synchronisées : DVF Gironde / 1ère date de parution / Potentiel Division.")
+    st.divider()
+    st.subheader("📄 Générateur d'Offre PDF")
+    c1, c2 = st.columns(2)
+    with c1:
+        v_offre = st.selectbox("Secteur de l'Offre", list(MARKET_DATA.keys()))
+        p_ann = st.number_input("Prix Annonce (€)", value=300000)
+        s_hab = st.number_input("Surface (m2)", value=80)
+        t_est = st.number_input("Travaux (€)", value=50000)
+    with c2:
+        ref_dvf = MARKET_DATA[v_offre][marche_type]
+        revente_p = ref_dvf * s_hab
+        offre_max = (revente_p - (revente_p * 0.20) - t_est) / 1.05
+        st.metric("PRIX D'OFFRE CIBLE", f"{int(offre_max)} €")
+        
+        args = f"Secteur : {v_offre}. Prix DVF : {ref_dvf}e/m2. Travaux : {t_est}e. Tendance : {MARKET_DATA[v_offre]['tendance']}%."
+        if st.button("Générer PDF"):
+            pdf_data = create_pdf(v_offre, marche_type, s_hab, int(offre_max), args)
+            st.download_button("📥 Télécharger l'Offre", pdf_data, f"offre_{v_offre}.pdf", "application/pdf")
+
+st.info("Données DVF actualisées / Calculateur de marge MDB / Détection de division.")
