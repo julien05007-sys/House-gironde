@@ -4,12 +4,12 @@ import numpy as np
 import plotly.express as px
 from datetime import datetime
 from fpdf import FPDF
-import time
+import io
 
 # --- CONFIGURATION ---
-st.set_page_config(page_title="MDB GIRONDE - SYSTÈME FINAL", layout="wide")
+st.set_page_config(page_title="MDB GIRONDE - IMPORT & ANALYSE", layout="wide")
 
-# --- DONNÉES DE RÉFÉRENCE ---
+# --- DONNÉES DE RÉFÉRENCE (DVF & GÉO) ---
 MARKET_DATA = {
     "Bordeaux Centre": {"cp": "33000", "Maison": 5500, "Appartement": 4800, "tendance": +1.2, "lat": 44.8378, "lon": -0.5792},
     "Bordeaux Bastide": {"cp": "33100", "Maison": 4100, "Appartement": 3700, "tendance": +2.5, "lat": 44.8415, "lon": -0.5500},
@@ -18,137 +18,101 @@ MARKET_DATA = {
     "Floirac": {"cp": "33270", "Maison": 2900, "Appartement": 2500, "tendance": +2.0, "lat": 44.8364, "lon": -0.5204},
     "Pessac": {"cp": "33600", "Maison": 4200, "Appartement": 3800, "tendance": -0.5, "lat": 44.8061, "lon": -0.6353},
     "Mérignac": {"cp": "33700", "Maison": 4300, "Appartement": 3900, "tendance": +0.8, "lat": 44.8386, "lon": -0.6586},
-    "Bègles": {"cp": "33130", "Maison": 3700, "Appartement": 3200, "tendance": +1.0, "lat": 44.8078, "lon": -0.5486},
-    "Villenave": {"cp": "33140", "Maison": 3400, "Appartement": 2900, "tendance": +0.5, "lat": 44.7731, "lon": -0.5606},
     "Libourne": {"cp": "33500", "Maison": 2300, "Appartement": 1900, "tendance": +4.5, "lat": 44.9140, "lon": -0.2440}
 }
 
-# --- FONCTION EXPORT PDF (CORRIGÉE) ---
-def create_pdf(ville, type_b, surface, offre, arguments):
-    pdf = FPDF()
-    pdf.add_page()
-    pdf.set_font("Helvetica", "B", 16)
-    pdf.cell(0, 10, "RAPPORT D'OFFRE D'ACHAT - MDB GIRONDE", ln=True, align='C')
-    pdf.ln(10)
-    pdf.set_font("Helvetica", "", 12)
-    pdf.cell(0, 10, f"Secteur : {ville} | Type : {type_b}", ln=True)
-    pdf.cell(0, 10, f"Surface habitable : {surface} m2", ln=True)
-    pdf.cell(0, 10, f"Date : {datetime.now().strftime('%d/%m/%Y')}", ln=True)
-    pdf.ln(5)
-    pdf.set_font("Helvetica", "B", 14)
-    pdf.cell(0, 10, f"MONTANT DE L'OFFRE : {offre} euros", ln=True)
-    pdf.ln(5)
-    pdf.set_font("Helvetica", "", 11)
-    pdf.multi_cell(0, 10, f"Arguments de negociation :\n{arguments}")
-    return bytes(pdf.output()) # Fix pour AttributeError
+# --- FONCTION DE CALCUL MDB ---
+def process_row(row, marche_type):
+    try:
+        # Nettoyage des noms de colonnes pour l'import Excel
+        prix = row.get('prix') or row.get('Prix') or row.get('Valeur') or 0
+        bati = row.get('bati') or row.get('surface') or row.get('m2') or row.get('Surface') or 1
+        secteur = row.get('secteur') or row.get('ville') or row.get('Ville') or "Cenon"
+        terrain = row.get('terrain') or row.get('surface_terrain') or 0
+        balcon = row.get('balcon') or False
+        piscine = row.get('piscine') or False
+        
+        # 1. Prix au m2
+        p_m2 = prix / bati
+        
+        # 2. Comparaison DVF & Profit
+        ref_m2 = MARKET_DATA.get(secteur, {"Maison": 3000, "Appartement": 2500})[marche_type]
+        bonus = (15000 if balcon else 0) + (35000 if piscine else 0)
+        revente = (ref_m2 * bati) + bonus
+        profit = revente - (prix * 1.02 + 45000 + (revente - prix)*0.15)
+        
+        # 3. Division
+        div = "✅ OUI" if (terrain > 500 and terrain > bati*3) else "❌ NON"
+        
+        return pd.Series([int(p_m2), int(profit), div])
+    except:
+        return pd.Series([0, 0, "N/A"])
 
-# --- GÉNÉRATEUR DE VRAIS LIENS DE RECHERCHE ---
-def get_real_links(secteur, marche, prix_max, m2_min, piscine, balcon):
-    # Gestion du CP (Gironde entière si "Tous les secteurs")
-    cp = MARKET_DATA.get(secteur, {"cp": "d_33"})["cp"]
-    if cp == "d_33": loc_lbc = "d_33"
-    else: loc_lbc = f"c_{cp}"
-    
-    # Mots clés
-    query = marche.lower()
-    if piscine: query += " piscine"
-    if balcon: query += " balcon"
-    query = query.replace(" ", "%20")
-    
-    links = {
-        "LeBonCoin": f"https://www.leboncoin.fr/recherche?category=2&locations={loc_lbc}&price=min-{prix_max}&square={m2_min}-max&text={query}",
-        "Century21": f"https://www.century21.fr/annonces/achat/{'v-' + cp if cp != 'd_33' else ''}/",
-        "Orpi": f"https://www.orpi.com/recherche/achat/{marche.lower()}/{cp if cp != 'd_33' else 'gironde'}/",
-        "Laforet": f"https://www.laforet.com/acheter/rechercher?location={cp if cp != 'd_33' else '33'}",
-        "Guy Hoquet": f"https://www.guy-hoquet.com/achat/{marche.lower()}/{cp if cp != 'd_33' else 'gironde'}"
-    }
-    return links
-
-# --- SIDEBAR ---
+# --- SIDEBAR (IMPORT & FILTRES) ---
 st.sidebar.title("🦅 MDB GIRONDE PILOT")
+
+st.sidebar.subheader("📂 Importer vos données Excel/CSV")
+uploaded_file = st.sidebar.file_uploader("Glissez un fichier (Yanport, Castorus, etc.)", type=["xlsx", "csv"])
+
 marche_type = st.sidebar.radio("Marché visé", ["Maison", "Appartement"])
 secteur_selected = st.sidebar.selectbox("📍 Choix du Secteur", ["Tous les secteurs"] + list(MARKET_DATA.keys()))
 
 st.sidebar.divider()
-budget_max = st.sidebar.number_input("Budget Achat Max (€)", value=500000)
-m2_hab_min = st.sidebar.number_input("Surface Habitable Min (m2)", value=70)
-prix_m2_max = st.sidebar.slider("Prix m2 Max autorisé (€)", 1500, 8000, 4500)
+budget_max = st.sidebar.number_input("Budget Achat Max (€)", value=600000)
+prix_m2_max = st.sidebar.slider("Prix m2 Max autorisé (€)", 1000, 8000, 5000)
 
-st.sidebar.divider()
-f_piscine = st.sidebar.checkbox("Option Piscine 🏊‍♂️")
-f_balcon = st.sidebar.checkbox("Option Balcon / Terrasse ☕")
+# --- CHARGEMENT DES DONNÉES ---
+@st.cache_data
+def get_base_data():
+    return pd.DataFrame([
+        {"source": "LBC", "titre": "Echoppe", "secteur": "Bordeaux Bastide", "prix": 260000, "bati": 75, "terrain": 50, "date": "2026-02-20", "lien": "https://www.leboncoin.fr"},
+        {"source": "Orpi", "titre": "Maison divisible", "secteur": "Pessac", "prix": 395000, "bati": 110, "terrain": 980, "date": "2023-09-15", "lien": "https://www.orpi.com"}
+    ])
 
-# --- SOURCING (Simulation d'annonces avec calculs réels) ---
-@st.cache_data(ttl=600)
-def fetch_annonces():
-    # Données simulées (À remplacer par un vrai scraper si besoin)
-    data = [
-        {"source": "LBC", "titre": "Maison avec Balcon", "secteur": "Cenon", "prix": 245000, "bati": 85, "terrain": 450, "piscine": False, "balcon": True, "chauffage": "Gaz", "date_1ere": "2024-01-10", "lien": "https://www.leboncoin.fr"},
-        {"source": "C21", "titre": "Appartement T3 centre", "secteur": "Bordeaux Centre", "prix": 310000, "bati": 65, "terrain": 0, "piscine": False, "balcon": True, "chauffage": "Elec", "date_1ere": "2026-02-10", "lien": "https://www.century21.fr"},
-        {"source": "Orpi", "titre": "Maison divisible", "secteur": "Pessac", "prix": 395000, "bati": 110, "terrain": 980, "piscine": True, "balcon": False, "chauffage": "Fioul", "date_1ere": "2023-09-15", "lien": "https://www.orpi.com"},
-        {"source": "Laforet", "titre": "Echoppe à rénover", "secteur": "Bordeaux Bastide", "prix": 260000, "bati": 75, "terrain": 50, "piscine": False, "balcon": True, "chauffage": "Gaz", "date_1ere": "2026-02-20", "lien": "https://www.laforet.com"}
-    ]
-    return pd.DataFrame(data)
+df = get_base_data()
 
-df = fetch_annonces()
+if uploaded_file is not None:
+    try:
+        if uploaded_file.name.endswith('.csv'):
+            imported_df = pd.read_csv(uploaded_file)
+        else:
+            imported_df = pd.read_excel(uploaded_file)
+        st.sidebar.success("✅ Fichier importé avec succès !")
+        df = pd.concat([df, imported_df], ignore_index=True)
+    except Exception as e:
+        st.sidebar.error(f"Erreur d'import : {e}")
 
-# --- CALCULS MÉTIERS ---
-def process_data(row):
-    # 1. Ancienneté
-    d1 = pd.to_datetime(row['date_1ere'])
-    jours = (datetime.now() - d1).days
-    statut = "⚠️ REPOSTE" if jours > 90 else "✨ NOUVEAU"
-    
-    # 2. Prix m2 & Profit
-    p_m2 = row['prix'] / row['bati']
-    ref_m2 = MARKET_DATA[row['secteur']][marche_type]
-    bonus = (15000 if row['balcon'] else 0) + (30000 if row['piscine'] else 0)
-    revente = (ref_m2 * row['bati']) + bonus
-    profit = revente - (row['prix'] * 1.02 + 45000 + (revente - row['prix'])*0.15)
-    
-    # 3. Division
-    div = "✅ OUI" if (row['terrain'] > 500 and row['terrain'] > row['bati']*2.5) else "❌ NON"
-    
-    return pd.Series([int(p_m2), int(profit), div, statut, jours])
+# --- ANALYSE ---
+if not df.empty:
+    df[['Prix_m2', 'Profit_Est', 'Division']] = df.apply(lambda row: process_row(row, marche_type), axis=1)
 
-df[['Prix_m2', 'Profit_Est', 'Division', 'Statut', 'Jours']] = df.apply(process_data, axis=1)
-
-# Appliquer filtres de la sidebar
+# Filtres actifs
 if secteur_selected != "Tous les secteurs":
     df = df[df['secteur'] == secteur_selected]
-df = df[(df['prix'] <= budget_max) & (df['Prix_m2'] <= prix_m2_max) & (df['bati'] >= m2_hab_min)]
-if f_piscine: df = df[df['piscine'] == True]
-if f_balcon: df = df[df['balcon'] == True]
+df = df[(df['prix'] <= budget_max) & (df['Prix_m2'] <= prix_m2_max)]
 
 # --- DASHBOARD ---
-st.title(f"🚀 Sourcing MDB : {secteur_selected}")
+st.title("🚀 Analyseur d'Opportunités MDB")
 
-tab1, tab2, tab3 = st.tabs(["📋 Opportunités", "🗺️ Analyse Marché", "🤝 Négociateur & Liens"])
+tab1, tab2, tab3 = st.tabs(["📊 Résultats de Chasse", "🗺️ Marché & Carto", "🤝 Négociateur & PDF"])
 
 with tab1:
-    st.subheader(f"Résultats ({len(df)} biens)")
-    st.dataframe(df[['Statut', 'Jours', 'Profit_Est', 'source', 'titre', 'prix', 'Prix_m2', 'secteur', 'bati', 'terrain', 'Division', 'chauffage', 'balcon', 'piscine', 'lien']], use_container_width=True)
+    st.subheader(f"{len(df)} biens analysés (Données internes + Imports)")
+    st.dataframe(df, use_container_width=True)
 
 with tab2:
-    col_a, col_b = st.columns([2, 1])
-    with col_a:
-        st.subheader("Carte des Secteurs")
+    col1, col2 = st.columns([2, 1])
+    with col1:
+        st.subheader("Carte de la Gironde")
         m_df = pd.DataFrame([{"Ville": k, "Lat": v['lat'], "Lon": v['lon'], "m2": v[marche_type], "Trend": v['tendance']} for k, v in MARKET_DATA.items()])
         fig = px.scatter_mapbox(m_df, lat="Lat", lon="Lon", color="Trend", size="m2", hover_name="Ville", zoom=9, mapbox_style="carto-positron")
         st.plotly_chart(fig, use_container_width=True)
-    with col_b:
-        st.subheader("Tendances (6 mois)")
+    with col2:
+        st.subheader("Tendances 6 mois")
         st.line_chart(m_df.set_index("Ville")["Trend"])
 
 with tab3:
-    st.subheader("🔗 Liens de Sourcing Réels")
-    links = get_real_links(secteur_selected, marche_type, budget_max, m2_hab_min, f_piscine, f_balcon)
-    cols = st.columns(len(links))
-    for i, (name, url) in enumerate(links.items()):
-        cols[i].link_button(f"🔍 {name}", url)
-
-    st.divider()
-    st.subheader("📄 Générateur d'Offre PDF")
+    st.subheader("Générateur d'Offre PDF")
     c1, c2 = st.columns(2)
     with c1:
         v_offre = st.selectbox("Secteur de l'Offre", list(MARKET_DATA.keys()))
@@ -159,11 +123,15 @@ with tab3:
         ref_dvf = MARKET_DATA[v_offre][marche_type]
         revente_p = ref_dvf * s_hab
         offre_max = (revente_p - (revente_p * 0.20) - t_est) / 1.05
-        st.metric("PRIX D'OFFRE CIBLE", f"{int(offre_max)} €")
+        st.metric("PRIX D'OFFRE CONSEILLÉ", f"{int(offre_max)} €")
         
-        args = f"Secteur : {v_offre}. Prix DVF : {ref_dvf}e/m2. Travaux : {t_est}e. Tendance : {MARKET_DATA[v_offre]['tendance']}%."
-        if st.button("Générer PDF"):
-            pdf_data = create_pdf(v_offre, marche_type, s_hab, int(offre_max), args)
-            st.download_button("📥 Télécharger l'Offre", pdf_data, f"offre_{v_offre}.pdf", "application/pdf")
+        if st.button("Générer PDF d'Offre"):
+            # Fonction PDF simplifiée pour éviter les erreurs de flux
+            pdf = FPDF()
+            pdf.add_page()
+            pdf.set_font("Helvetica", size=12)
+            pdf.cell(200, 10, txt=f"OFFRE D'ACHAT - {v_offre}", ln=True, align='C')
+            pdf.cell(200, 10, txt=f"Montant : {int(offre_max)} euros", ln=True)
+            st.download_button("📥 Télécharger PDF", pdf.output(dest='S').encode('latin-1'), f"offre_{v_offre}.pdf")
 
-st.info("Données DVF actualisées / Calculateur de marge MDB / Détection de division.")
+st.info("💡 Conseil : Exportez vos recherches LeBonCoin ou Yanport en Excel et glissez-les dans la barre latérale pour une analyse instantanée.")
